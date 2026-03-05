@@ -103,6 +103,8 @@ class OfflineData:
 
         # Avoids reinstantiating the batch iterator each time we sample.
         self.batch_iterators = None
+        # Guard against infinite recursion when dataset is empty (see sample()).
+        self._sample_retry = False
         self.map_batches_kwargs = (
             self.default_map_batches_kwargs | self.config.map_batches_kwargs
         )
@@ -259,13 +261,25 @@ class OfflineData:
                 return next(self.batch_iterators)
             except StopIteration:
                 # If the batch iterator is exhausted, reinitiate a new one.
+                # Guard: avoid infinite recursion when dataset is empty (0 rows).
+                # On retry, a new iterator over empty data immediately raises
+                # StopIteration again; raising here prevents infinite recursion.
+                if self._sample_retry:
+                    raise ValueError(
+                        "Offline dataset is empty (0 rows). Cannot sample. "
+                        "Check that input paths contain valid data and read correctly."
+                    )
                 logger.debug("Batch iterator exhausted. Reinitiating ...")
                 self.batch_iterators = None
-                return self.sample(
-                    num_samples=num_samples,
-                    return_iterator=return_iterator,
-                    num_shards=num_shards,
-                )
+                self._sample_retry = True
+                try:
+                    return self.sample(
+                        num_samples=num_samples,
+                        return_iterator=return_iterator,
+                        num_shards=num_shards,
+                    )
+                finally:
+                    self._sample_retry = False
 
     @property
     def default_map_batches_kwargs(self):
